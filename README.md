@@ -43,7 +43,7 @@ To add a Transaction Item (Ecommerce)
 * `window.analytics.addTransactionItem('ID', 'Name', 'SKU', 'Category', Price, Quantity, 'Currency Code')` where Price and Quantity are numeric
 
 To add a Custom Dimension
-* `window.analytics.addCustomDimension('Key', 'Value', success, error)`
+* `window.analytics.addCustomDimension('UA-XXXX-YY', 'Key', 'Value', success, error)`
 
 To set a UserId:
 * `window.analytics.setUserId('my-user-id')`

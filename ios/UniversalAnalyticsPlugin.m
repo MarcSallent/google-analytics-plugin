@@ -11,8 +11,8 @@
 - (void) pluginInitialize
 {
     _debugMode = false;
-    _trackerStarted = false;
     _customDimensions = nil;
+    _trackers = nil;
 }
 
 - (void) startTrackerWithId: (CDVInvokedUrlCommand*)command
@@ -22,24 +22,30 @@
 
     [GAI sharedInstance].dispatchInterval = 10;
 
-    [[GAI sharedInstance] trackerWithTrackingId:accountId];
+    if (!_trackers) {
+      _trackers = [[NSMutableDictionary alloc] init];
+    }
 
-    _trackerStarted = true;
+    id newTracker = [[GAI sharedInstance] trackerWithTrackingId:accountId];
+    [_trackers setObject:newTracker forKey:accountId];
+
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
     /* NSLog(@"successfully started GAI tracker"); */
 }
 
-- (void) addCustomDimensionsToTracker: (id<GAITracker>)tracker
+- (void) addCustomDimensionsToTrackerWithAccountId: (NSString*)accountId
 {
-    if (_customDimensions) {
-      for (NSString *key in _customDimensions) {
-        NSString *value = [_customDimensions objectForKey:key];
+    if (_customDimensions && _customDimensions[accountId]) {
+        NSMutableDictionary *dimensionsForTracker = _customDimensions[accountId];
 
-        /* NSLog(@"Setting tracker dimension slot %@: <%@>", key, value); */
-        [tracker set:[GAIFields customDimensionForIndex:[key intValue]]
-        value:value];
-      }
+        for (NSString *key in dimensionsForTracker) {
+            NSString *value = [dimensionsForTracker objectForKey:key];
+            id<GAITracker> tracker = _trackers[accountId];
+
+            /* NSLog(@"Setting tracker dimension slot %@: <%@>", key, value); */
+            [tracker set:[GAIFields customDimensionForIndex:[key intValue]] value:value];
+        }
     }
 }
 
@@ -51,33 +57,41 @@
 
 - (void) setUserId: (CDVInvokedUrlCommand*)command
 {
-  CDVPluginResult* pluginResult = nil;
-  NSString* userId = [command.arguments objectAtIndex:0];
+    CDVPluginResult* pluginResult = nil;
+    NSString* userId = [command.arguments objectAtIndex:0];
 
-  if ( ! _trackerStarted) {
-    pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
+    if ([_trackers count] < 1) {
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+        return;
+    }
+
+    for (NSString *accountId in _trackers) {
+        id<GAITracker> tracker = _trackers[accountId];
+        [tracker set:@"&uid" value: userId];
+    }
+
+    pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-    return;
-  }
-
-  id<GAITracker> tracker = [[GAI sharedInstance] defaultTracker];
-  [tracker set:@"&uid" value: userId];
-
-  pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-  [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
 }
 
 - (void) addCustomDimension: (CDVInvokedUrlCommand*)command
 {
     CDVPluginResult* pluginResult = nil;
-    NSString* key = [command.arguments objectAtIndex:0];
-    NSString* value = [command.arguments objectAtIndex:1];
+    NSString* accountId = [command.arguments objectAtIndex:0];
+    NSString* key       = [command.arguments objectAtIndex:1];
+    NSString* value     = [command.arguments objectAtIndex:2];
 
-    if ( ! _customDimensions) {
-      _customDimensions = [[NSMutableDictionary alloc] init];
+    // _customDimensions is a two level dictionary of accountId -> key -> value
+    if (!_customDimensions) {
+        _customDimensions = [[NSMutableDictionary alloc] init];
     }
 
-    _customDimensions[key] = value;
+    if (![_customDimensions objectForKey:accountId]) {
+        [_customDimensions setObject:[[NSMutableDictionary alloc] init] forKey:accountId];
+    }
+
+    _customDimensions[accountId][key] = value;
 
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
@@ -87,10 +101,10 @@
 {
     CDVPluginResult* pluginResult = nil;
 
-    if ( ! _trackerStarted) {
-      pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
-      [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-      return;
+    if ([_trackers count] < 1) {
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+        return;
     }
 
     NSString *category = nil;
@@ -110,15 +124,19 @@
     if ([command.arguments count] > 3)
         value = [command.arguments objectAtIndex:3];
 
-    id<GAITracker> tracker = [[GAI sharedInstance] defaultTracker];
+    for (NSString *accountId in _trackers) {
+        id<GAITracker> tracker = _trackers[accountId];
 
-    [self addCustomDimensionsToTracker:tracker];
+        [self addCustomDimensionsToTrackerWithAccountId:accountId];
 
-    [tracker send:[[GAIDictionaryBuilder
-    createEventWithCategory: category //required
-         action: action //required
-          label: label
-          value: value] build]];
+        [tracker send:
+            [[GAIDictionaryBuilder createEventWithCategory: category //required
+                                   action: action //required
+                                   label: label
+                                   value: value]
+            build]];
+
+    }
 
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
@@ -128,7 +146,7 @@
 {
     CDVPluginResult* pluginResult = nil;
 
-    if ( ! _trackerStarted) {
+    if ([_trackers count] < 1) {
       pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
       [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
       return;
@@ -143,13 +161,15 @@
     if ([command.arguments count] > 1)
         fatal = [command.arguments objectAtIndex:1];
 
-    id<GAITracker> tracker = [[GAI sharedInstance] defaultTracker];
+    for (NSString *accountId in _trackers) {
+        id<GAITracker> tracker = _trackers[accountId];
 
-    [self addCustomDimensionsToTracker:tracker];
+        [self addCustomDimensionsToTrackerWithAccountId:accountId];
 
-    [tracker send:[[GAIDictionaryBuilder
-    createExceptionWithDescription: description
-                                     withFatal: fatal] build]];
+        [tracker send:[[GAIDictionaryBuilder
+        createExceptionWithDescription: description
+                                         withFatal: fatal] build]];
+    }
 
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
@@ -159,7 +179,7 @@
 {
     CDVPluginResult* pluginResult = nil;
 
-    if ( ! _trackerStarted) {
+    if ([_trackers count] < 1) {
       pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
       [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
       return;
@@ -167,19 +187,21 @@
 
     NSString* screenName = [command.arguments objectAtIndex:0];
 
-    id<GAITracker> tracker = [[GAI sharedInstance] defaultTracker];
+    for (NSString *accountId in _trackers) {
+        id<GAITracker> tracker = _trackers[accountId];
 
-    [self addCustomDimensionsToTracker:tracker];
+        [self addCustomDimensionsToTrackerWithAccountId:accountId];
 
-    NSString* deepLinkUrl = [command.arguments objectAtIndex:1];
-    GAIDictionaryBuilder* openParams = [[GAIDictionaryBuilder alloc] init];
+        NSString* deepLinkUrl = [command.arguments objectAtIndex:1];
+        GAIDictionaryBuilder* openParams = [[GAIDictionaryBuilder alloc] init];
 
-    if (deepLinkUrl) {
-        [[openParams setCampaignParametersFromUrl:deepLinkUrl] build];
+        if (![deepLinkUrl isKindOfClass:[NSNull class]]) {
+            [[openParams setCampaignParametersFromUrl:deepLinkUrl] build];
+        }
+
+        [tracker set:kGAIScreenName value:screenName];
+        [tracker send:[[[GAIDictionaryBuilder createScreenView] setAll:[openParams build]] build]];
     }
-
-    [tracker set:kGAIScreenName value:screenName];
-    [tracker send:[[[GAIDictionaryBuilder createScreenView] setAll:[openParams build]] build]];
 
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
@@ -189,7 +211,7 @@
 {
     CDVPluginResult* pluginResult = nil;
 
-    if ( ! _trackerStarted) {
+    if ([_trackers count] < 1) {
       pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
       [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
       return;
@@ -212,15 +234,17 @@
     if ([command.arguments count] > 3)
         label = [command.arguments objectAtIndex:3];
 
-    id<GAITracker> tracker = [[GAI sharedInstance] defaultTracker];
+    for (NSString *accountId in _trackers) {
+        id<GAITracker> tracker = _trackers[accountId];
 
-    [self addCustomDimensionsToTracker:tracker];
+        [self addCustomDimensionsToTrackerWithAccountId:accountId];
 
-    [tracker send:[[GAIDictionaryBuilder
-    createTimingWithCategory: category //required
-         interval: intervalInMilliseconds //required
-           name: name
-          label: label] build]];
+        [tracker send:[[GAIDictionaryBuilder
+        createTimingWithCategory: category //required
+             interval: intervalInMilliseconds //required
+               name: name
+              label: label] build]];
+    }
 
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
@@ -230,7 +254,7 @@
 {
     CDVPluginResult* pluginResult = nil;
 
-    if ( ! _trackerStarted) {
+    if ([_trackers count] < 1) {
       pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
       [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
       return;
@@ -262,16 +286,16 @@
     if ([command.arguments count] > 5)
         currencyCode = [command.arguments objectAtIndex:5];
 
-    id<GAITracker> tracker = [[GAI sharedInstance] defaultTracker];
+    for (NSString *accountId in _trackers) {
+        id<GAITracker> tracker = _trackers[accountId];
 
-
-    [tracker send:[[GAIDictionaryBuilder createTransactionWithId:transactionId             // (NSString) Transaction ID
-                                                     affiliation:affiliation         // (NSString) Affiliation
-                                                         revenue:revenue                  // (NSNumber) Order revenue (including tax and shipping)
-                                                             tax:tax                  // (NSNumber) Tax
-                                                        shipping:shipping                      // (NSNumber) Shipping
-                                                    currencyCode:currencyCode] build]];        // (NSString) Currency code
-
+        [tracker send:[[GAIDictionaryBuilder createTransactionWithId:transactionId             // (NSString) Transaction ID
+                                                         affiliation:affiliation         // (NSString) Affiliation
+                                                             revenue:revenue                  // (NSNumber) Order revenue (including tax and shipping)
+                                                                 tax:tax                  // (NSNumber) Tax
+                                                            shipping:shipping                      // (NSNumber) Shipping
+                                                        currencyCode:currencyCode] build]];        // (NSString) Currency code
+    }
 
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
@@ -283,10 +307,10 @@
 {
     CDVPluginResult* pluginResult = nil;
 
-    if ( ! _trackerStarted) {
-      pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
-      [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-      return;
+    if ([_trackers count] < 1) {
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Tracker not started"];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+        return;
     }
 
     NSString *transactionId = nil;
@@ -319,17 +343,17 @@
     if ([command.arguments count] > 6)
         currencyCode = [command.arguments objectAtIndex:6];
 
-    id<GAITracker> tracker = [[GAI sharedInstance] defaultTracker];
+    for (NSString *accountId in _trackers) {
+        id<GAITracker> tracker = _trackers[accountId];
 
-
-    [tracker send:[[GAIDictionaryBuilder createItemWithTransactionId:transactionId         // (NSString) Transaction ID
-                                                                name:name  // (NSString) Product Name
-                                                                 sku:sku           // (NSString) Product SKU
-                                                            category:category  // (NSString) Product category
-                                                               price:price               // (NSNumber)  Product price
-                                                            quantity:quantity                 // (NSNumber)  Product quantity
-                                                        currencyCode:currencyCode] build]];    // (NSString) Currency code
-
+        [tracker send:[[GAIDictionaryBuilder createItemWithTransactionId:transactionId         // (NSString) Transaction ID
+                                                                    name:name  // (NSString) Product Name
+                                                                     sku:sku           // (NSString) Product SKU
+                                                                category:category  // (NSString) Product category
+                                                                   price:price               // (NSNumber)  Product price
+                                                                quantity:quantity                 // (NSNumber)  Product quantity
+                                                            currencyCode:currencyCode] build]];    // (NSString) Currency code
+    }
 
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
